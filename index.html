@@ -59,6 +59,11 @@
   label.chk { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 12px; color: var(--text); font-size: 15px; border-top: 1px solid #eee; }
   label.chk:first-child { border-top: 0; }
   label.chk input { width: 22px; height: 22px; flex: none; margin: 0; accent-color: var(--green); }
+  .wks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  label.wk { display: flex; align-items: center; gap: 6px; margin: 0; padding: 9px 8px; border: 1px solid #ccc; border-radius: 8px; background: #fff; color: var(--text); font-size: 14px; }
+  label.wk:has(input:checked) { border-color: var(--green); background: var(--green-bg); }
+  label.wk input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--green); }
+  .hint { font-size: 12px; color: var(--sub); margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -157,6 +162,40 @@ function renderRegister() {
   }, '送出中…');
 }
 
+/* ====== 外勞選擇（申請與回報共用）====== */
+const TEMP_TAG = '（臨時）';
+function workerPickerHtml(prefix, title, selected) {
+  const roster = D.workers || [];
+  const temps = selected.filter((n) => roster.indexOf(n) < 0).map((n) => n.replace(TEMP_TAG, ''));
+  return `<label>${title}</label>
+    ${roster.length ? `<div class="wks">${roster.map((n) => `<label class="wk"><input type="checkbox" class="${prefix}Wk" value="${esc(n)}" ${selected.indexOf(n) >= 0 ? 'checked' : ''}><span>${esc(n)}</span></label>`).join('')}</div>` : ''}
+    <input id="${prefix}WkOther" value="${esc(temps.join('、'))}" placeholder="名單外的臨時支援人員，多位用「、」分開" style="margin-top:8px">
+    <div class="hint" id="${prefix}WkSum"></div>`;
+}
+function bindWorkerPicker(root, prefix, peopleInput, onChange, emptyHint) {
+  const boxes = Array.from(root.querySelectorAll('.' + prefix + 'Wk'));
+  const other = root.querySelector('#' + prefix + 'WkOther');
+  const names = () => {
+    const out = boxes.filter((b) => b.checked).map((b) => b.value);
+    other.value.split(/[、,，;；\s]+/).map((n) => n.trim()).filter(Boolean).forEach((n) => { if (out.indexOf(n) < 0) out.push(n); });
+    return out;
+  };
+  const sync = () => {
+    const n = names();
+    if (n.length) { peopleInput.value = n.length; peopleInput.readOnly = true; }
+    else peopleInput.readOnly = false;
+    root.querySelector('#' + prefix + 'WkSum').textContent = n.length ? `已選 ${n.length} 位，人數自動帶入` : emptyHint;
+    onChange();
+  };
+  boxes.forEach((b) => (b.onchange = sync));
+  other.oninput = sync;
+  sync();
+  return {
+    picked: () => boxes.filter((b) => b.checked).map((b) => b.value),
+    other: () => other.value,
+  };
+}
+
 /* ====== 申請 ====== */
 function renderApply() {
   const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
@@ -173,6 +212,7 @@ function renderApply() {
       <div><label>每人時數</label><input type="number" id="aHours" value="4" min="0.5" max="12" step="0.5" inputmode="decimal"></div>
     </div>
     <div class="total">預估總工時：<b id="aTotal">4</b> 小時</div>
+    ${workerPickerHtml('a', '指派外勞（可複選，不選則由主管安排）', [])}
     <label>工作說明</label><textarea id="aDesc" placeholder="例：A 棟幼蟲盤清洗，約 120 盤"></textarea>
     <label>預計完成事項（每行一項，完成後要逐項勾選確認）</label>
     <textarea id="aTasks" placeholder="例：&#10;清洗幼蟲盤 120 盤&#10;更換飼養箱墊料&#10;清運廢棄物至集中區"></textarea>
@@ -180,6 +220,7 @@ function renderApply() {
   </div>`;
   const calc = () => { $('#aTotal').textContent = Math.round((+$('#aPeople').value || 0) * (+$('#aHours').value || 0) * 10) / 10; };
   $('#aPeople').oninput = calc; $('#aHours').oninput = calc;
+  const wk = bindWorkerPicker($('#body'), 'a', $('#aPeople'), calc, '不指定，由主管安排');
   const OTHER = D.items[D.items.length - 1];
   $('#aItem').onchange = () => {
     const on = $('#aItem').value === OTHER;
@@ -191,6 +232,7 @@ function renderApply() {
       date: $('#aDate').value, item: $('#aItem').value, itemOther: $('#aOther').value,
       people: +$('#aPeople').value, hours: +$('#aHours').value, desc: $('#aDesc').value,
       tasks: $('#aTasks').value.split('\n').map((t) => t.trim()).filter(Boolean),
+      workers: wk.picked(), workerOther: wk.other(),
     });
     toast('已送出，單號 ' + r.id);
     tab = 'mine'; await reload();
@@ -233,6 +275,7 @@ async function openDetail(id) {
         <div><label>實際每人時數</label><input type="number" id="pHours" value="${esc(r.actHours !== '' ? r.actHours : r.hours)}" min="0" max="12" step="0.5" inputmode="decimal"></div>
       </div>
       <div class="total">實際總工時：<b id="pTotal"></b> 小時（預估 ${esc(r.estTotal)}）</div>
+      ${workerPickerHtml('p', '實際出勤外勞', splitNames(r.actWorkers || r.workers))}
       ${tasks.length ? `<label>確認已完成事項</label>
         <div class="checks">${tasks.map((t, i) => `<label class="chk"><input type="checkbox" class="pChk" data-i="${i}" ${String(prevCheck[i] || '').indexOf('✅') === 0 ? 'checked' : ''}><span>${esc(t)}</span></label>`).join('')}</div>
         <div class="meta" id="pChkSum" style="font-size:13px;color:var(--sub);margin-top:4px"></div>` : ''}
@@ -269,8 +312,10 @@ async function openDetail(id) {
           ? `<dt>事項確認</dt><dd>${esc(r.taskCheck)}</dd>`
           : tasks.length ? `<dt>預計事項</dt><dd>${tasks.map((t, i) => `${i + 1}. ${esc(t)}`).join('\n')}</dd>` : ''}
         <dt>預估工時</dt><dd>${esc(r.people)} 人 × ${esc(r.hours)} 小時 = ${esc(r.estTotal)} 小時</dd>
+        <dt>指派外勞</dt><dd>${esc(r.workers || '不指定（由主管安排）')}</dd>
         ${r.approver ? `<dt>核准</dt><dd>${esc(r.approver)}・${esc(r.approvedAt)}${r.approveNote ? '\n' + esc(r.approveNote) : ''}</dd>` : ''}
         ${r.actTotal !== '' ? `<dt>實際工時</dt><dd>${esc(r.actPeople)} 人 × ${esc(r.actHours)} 小時 = ${esc(r.actTotal)} 小時${diff}</dd>
+          ${r.actWorkers ? `<dt>實際外勞</dt><dd>${esc(r.actWorkers)}</dd>` : ''}
           <dt>完成狀態</dt><dd>${esc(r.done)}${r.doneNote ? '\n' + esc(r.doneNote) : ''}</dd>` : ''}
         ${photoLinks ? `<dt>照片</dt><dd>${photoLinks}</dd>` : ''}
         ${r.checker ? `<dt>檢核</dt><dd>${esc(r.checkResult)}・${esc(r.checker)}${r.checkNote ? '\n' + esc(r.checkNote) : ''}</dd>` : ''}
@@ -292,6 +337,7 @@ async function openDetail(id) {
   if (sheet.querySelector('#pGo')) {
     const calc = () => { sheet.querySelector('#pTotal').textContent = Math.round((+sheet.querySelector('#pPeople').value || 0) * (+sheet.querySelector('#pHours').value || 0) * 10) / 10; };
     sheet.querySelector('#pPeople').oninput = calc; sheet.querySelector('#pHours').oninput = calc; calc();
+    const pwk = bindWorkerPicker(sheet, 'p', sheet.querySelector('#pPeople'), calc, '請勾選實際來支援的外勞');
     const chks = Array.from(sheet.querySelectorAll('.pChk'));
     const syncChk = () => {
       const n = chks.filter((c) => c.checked).length;
@@ -312,10 +358,15 @@ async function openDetail(id) {
         id: r.id, actPeople: +sheet.querySelector('#pPeople').value, actHours: +sheet.querySelector('#pHours').value,
         done: sheet.querySelector('#pDone').value, note: sheet.querySelector('#pNote').value, photos,
         checked: chks.map((c) => c.checked),
+        actWorkers: pwk.picked(), actWorkerOther: pwk.other(),
       });
       await done('已送出回報，等待主管檢核');
     }, '上傳中…'));
   }
+}
+
+function splitNames(s) {
+  return String(s || '').split('、').map((n) => n.trim()).filter(Boolean);
 }
 
 // 壓縮照片：長邊 1280px、JPEG 品質 0.75
