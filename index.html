@@ -59,10 +59,11 @@
   label.chk { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 12px; color: var(--text); font-size: 15px; border-top: 1px solid #eee; }
   label.chk:first-child { border-top: 0; }
   label.chk input { width: 22px; height: 22px; flex: none; margin: 0; accent-color: var(--green); }
-  .wks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-  label.wk { display: flex; align-items: center; gap: 6px; margin: 0; padding: 9px 8px; border: 1px solid #ccc; border-radius: 8px; background: #fff; color: var(--text); font-size: 14px; }
-  label.wk:has(input:checked) { border-color: var(--green); background: var(--green-bg); }
-  label.wk input { width: 18px; height: 18px; margin: 0; flex: none; accent-color: var(--green); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chips:empty { display: none; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 6px 5px 10px; border-radius: 16px; background: var(--green-bg); color: var(--green); font-size: 14px; }
+  .chip small { font-size: 11px; background: #fff4e5; color: var(--orange); padding: 1px 5px; border-radius: 8px; }
+  .chip button { border: 0; background: none; color: var(--green); font-size: 13px; padding: 2px 4px; }
   .hint { font-size: 12px; color: var(--sub); margin-top: 4px; }
 </style>
 </head>
@@ -162,37 +163,68 @@ function renderRegister() {
   }, '送出中…');
 }
 
-/* ====== 外勞選擇（申請與回報共用）====== */
+/* ====== 外勞選擇（申請與回報共用）：下拉選單＋其他自行輸入 ====== */
 const TEMP_TAG = '（臨時）';
 function workerPickerHtml(prefix, title, selected) {
   const roster = D.workers || [];
-  const temps = selected.filter((n) => roster.indexOf(n) < 0).map((n) => n.replace(TEMP_TAG, ''));
   return `<label>${title}</label>
-    ${roster.length ? `<div class="wks">${roster.map((n) => `<label class="wk"><input type="checkbox" class="${prefix}Wk" value="${esc(n)}" ${selected.indexOf(n) >= 0 ? 'checked' : ''}><span>${esc(n)}</span></label>`).join('')}</div>` : ''}
-    <input id="${prefix}WkOther" value="${esc(temps.join('、'))}" placeholder="名單外的臨時支援人員，多位用「、」分開" style="margin-top:8px">
+    <div class="chips" id="${prefix}WkChips" data-init="${esc(JSON.stringify(selected))}"></div>
+    <select id="${prefix}WkSel">
+      <option value="">＋ 選擇外勞</option>
+      ${roster.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+      <option value="__other">其他（自行輸入）</option>
+    </select>
+    <div id="${prefix}WkOtherWrap" style="display:none;margin-top:8px">
+      <div style="display:flex;gap:8px">
+        <input id="${prefix}WkOther" placeholder="臨時支援人員姓名" style="flex:1">
+        <button type="button" class="btn" id="${prefix}WkAdd" style="width:auto;margin:0;padding:10px 16px">加入</button>
+      </div>
+    </div>
     <div class="hint" id="${prefix}WkSum"></div>`;
 }
 function bindWorkerPicker(root, prefix, peopleInput, onChange, emptyHint) {
-  const boxes = Array.from(root.querySelectorAll('.' + prefix + 'Wk'));
-  const other = root.querySelector('#' + prefix + 'WkOther');
-  const names = () => {
-    const out = boxes.filter((b) => b.checked).map((b) => b.value);
-    other.value.split(/[、,，;；\s]+/).map((n) => n.trim()).filter(Boolean).forEach((n) => { if (out.indexOf(n) < 0) out.push(n); });
-    return out;
+  const roster = D.workers || [];
+  const q = (id) => root.querySelector('#' + prefix + id);
+  const chipsEl = q('WkChips'), sel = q('WkSel'), wrap = q('WkOtherWrap'), other = q('WkOther');
+  let list = [];
+  JSON.parse(chipsEl.dataset.init || '[]').forEach((n) => {
+    if (roster.indexOf(n) >= 0) list.push({ name: n, temp: false });
+    else list.push({ name: n.replace(TEMP_TAG, ''), temp: true });
+  });
+  const add = (name, temp) => {
+    name = String(name).trim().replace(TEMP_TAG, '');
+    if (!name || list.some((x) => x.name === name)) return;
+    list.push({ name: name, temp: temp && roster.indexOf(name) < 0 });
   };
-  const sync = () => {
-    const n = names();
-    if (n.length) { peopleInput.value = n.length; peopleInput.readOnly = true; }
+  const render = () => {
+    chipsEl.innerHTML = list.map((x, i) =>
+      `<span class="chip">${esc(x.name)}${x.temp ? '<small>臨時</small>' : ''}<button type="button" data-i="${i}" aria-label="移除">✕</button></span>`).join('');
+    chipsEl.querySelectorAll('button').forEach((b) => (b.onclick = () => { list.splice(+b.dataset.i, 1); render(); }));
+    Array.from(sel.options).forEach((o) => { if (o.value && o.value !== '__other') o.disabled = list.some((x) => x.name === o.value); });
+    if (list.length) { peopleInput.value = list.length; peopleInput.readOnly = true; }
     else peopleInput.readOnly = false;
-    root.querySelector('#' + prefix + 'WkSum').textContent = n.length ? `已選 ${n.length} 位，人數自動帶入` : emptyHint;
+    q('WkSum').textContent = list.length ? `已選 ${list.length} 位，人數自動帶入` : emptyHint;
     onChange();
   };
-  boxes.forEach((b) => (b.onchange = sync));
-  other.oninput = sync;
-  sync();
+  const addOther = () => {
+    other.value.split(/[、,，;；\s]+/).forEach((n) => add(n, true));
+    other.value = '';
+    wrap.style.display = 'none';
+    render();
+  };
+  sel.onchange = () => {
+    const v = sel.value;
+    sel.value = '';
+    if (v === '__other') { wrap.style.display = 'block'; other.focus(); return; }
+    if (v) { add(v, false); render(); }
+  };
+  q('WkAdd').onclick = addOther;
+  other.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addOther(); } };
+  render();
   return {
-    picked: () => boxes.filter((b) => b.checked).map((b) => b.value),
-    other: () => other.value,
+    picked: () => list.filter((x) => !x.temp).map((x) => x.name),
+    // 填了臨時人員姓名但忘記按「加入」也一併送出
+    other: () => list.filter((x) => x.temp).map((x) => x.name).concat(other.value.trim() ? [other.value.trim()] : []).join('、'),
   };
 }
 
